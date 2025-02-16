@@ -1,0 +1,174 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+import time
+import random
+
+# Initialize Mediapipe for hand tracking
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.7)
+mp_drawing = mp.solutions.drawing_utils
+
+# Game settings
+window_width, window_height = 800, 600
+ball_radius = 20
+ball_speed = [7, 7]  # [x_speed, y_speed]
+ball_position = [window_width // 2, window_height // 2]
+ball_speed_increment = 1  # Speed increment every 5 seconds
+
+# Rod settings
+rod_height = 200
+rod_width = 10
+left_rod_x = 50
+right_rod_x = window_width - 50
+
+# Score
+score = [0, 0]  # [left_player, right_player]
+
+# Obstacle settings
+current_obstacle = []
+obstacle_timer = time.time()
+
+# Game states
+game_running = True
+winner = None
+
+# Initialize webcam
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, window_width)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, window_height)
+
+# Timer for speed increase
+start_time = time.time()
+
+# Function to display text with animation
+def display_text(frame, text, position, color=(255, 255, 255), scale=2, thickness=3):
+    cv2.putText(frame, text, position, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness)
+
+# Detect hand landmarks
+def detect_hand_landmarks(image, results):
+    hand_positions = {"left": None, "right": None}
+    if results.multi_hand_landmarks:
+        for hand_landmarks, hand_class in zip(results.multi_hand_landmarks, results.multi_handedness):
+            x_coords = [lm.x for lm in hand_landmarks.landmark]
+            y_coords = [lm.y for lm in hand_landmarks.landmark]
+            hand_center = (int(np.mean(x_coords) * window_width), int(np.mean(y_coords) * window_height))
+
+            if hand_class.classification[0].label == "Left":
+                hand_positions["left"] = hand_center
+            else:
+                hand_positions["right"] = hand_center
+    return hand_positions
+
+# Game loop
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    # Flip and resize the frame
+    frame = cv2.flip(frame, 1)
+    frame = cv2.resize(frame, (window_width, window_height))
+
+    # Convert to RGB
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = hands.process(rgb_frame)
+
+    # Detect hand positions
+    hand_positions = detect_hand_landmarks(rgb_frame, results)
+
+    # Update rods' positions based on hand detection
+    if hand_positions["left"]:
+        left_rod_y = hand_positions["left"][1] - rod_height // 2
+    else:
+        left_rod_y = window_height // 2 - rod_height // 2
+
+    if hand_positions["right"]:
+        right_rod_y = hand_positions["right"][1] - rod_height // 2
+    else:
+        right_rod_y = window_height // 2 - rod_height // 2
+
+    # Ball movement
+    ball_position[0] += ball_speed[0]
+    ball_position[1] += ball_speed[1]
+
+    # Increase ball speed every 9 seconds
+    if time.time() - start_time >= 9:
+        ball_speed[0] += ball_speed_increment if ball_speed[0] > 0 else -ball_speed_increment
+        ball_speed[1] += ball_speed_increment if ball_speed[1] > 0 else -ball_speed_increment
+        start_time = time.time()
+
+    # Ball collision with top and bottom
+    if ball_position[1] <= ball_radius or ball_position[1] >= window_height - ball_radius:
+        ball_speed[1] = -ball_speed[1]
+
+    # Ball collision with left rod
+    if (
+        ball_position[0] - ball_radius <= left_rod_x + rod_width
+        and left_rod_y <= ball_position[1] <= left_rod_y + rod_height
+    ):
+        ball_speed[0] = -ball_speed[0]
+    elif ball_position[0] - ball_radius <= 0:
+        score[1] += 1
+        ball_position = [window_width // 2, window_height // 2]
+
+    # Ball collision with right rod
+    if (
+        ball_position[0] + ball_radius >= right_rod_x - rod_width
+        and right_rod_y <= ball_position[1] <= right_rod_y + rod_height
+    ):
+        ball_speed[0] = -ball_speed[0]
+    elif ball_position[0] + ball_radius >= window_width:
+        score[0] += 1
+        ball_position = [window_width // 2, window_height // 2]
+
+    # Add and handle obstacles
+    if time.time() - obstacle_timer >= 3:
+        current_obstacle = [
+            (
+                random.randint(100, window_width - 100),
+                random.randint(100, window_height - 100),
+                random.randint(20, 50),  # Obstacle width
+                random.randint(50, 150)  # Obstacle height
+            ) for _ in range(2)  # Add multiple obstacles
+        ]
+        obstacle_timer = time.time()
+
+    for obs in current_obstacle:
+        obs_x, obs_y, obs_w, obs_h = obs
+        if (
+            obs_x <= ball_position[0] <= obs_x + obs_w
+            and obs_y <= ball_position[1] <= obs_y + obs_h
+        ):
+            ball_speed[0] = -ball_speed[0]
+        cv2.rectangle(frame, (obs_x, obs_y), (obs_x + obs_w, obs_y + obs_h), (0, 255, 255), -1)
+
+    # End game if score reaches to 10
+    if max(score) >= 10:
+        game_running = False
+        winner = "Left Player" if score[0] >= 30 else "Right Player"
+
+    # Draw elements on the frame
+    if game_running:
+        cv2.circle(frame, tuple(ball_position), ball_radius, (0, 255, 0), -1)  # Ball
+        cv2.rectangle(frame, (left_rod_x, left_rod_y), (left_rod_x + rod_width, left_rod_y + rod_height), (255, 0, 0), -1)  # Left rod
+        cv2.rectangle(frame, (right_rod_x - rod_width, right_rod_y), (right_rod_x, right_rod_y + rod_height), (0, 0, 255), -1)  # Right rod
+        cv2.putText(frame, f"Right Player missed : {score[0]}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.putText(frame, f"Left Player missed : {score[1]}", (window_width - 400, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    else:
+        display_text(frame, "Game Over!", (200, 200), (0, 0, 255), scale=3, thickness=5)
+        display_text(frame, f"{winner} Wins!", (200, 300), (0, 255, 0), scale=3, thickness=5)
+        cv2.imshow("Hand-Controlled Game by Aayush", frame)
+        cv2.waitKey(3000)
+        break
+
+    # Display the frame
+    cv2.imshow("Hand-Controlled Game by Aayush", frame)
+
+    # Exit on pressing 'q'
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# Release resources
+cap.release()
+cv2.destroyAllWindows()
